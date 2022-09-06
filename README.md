@@ -1,5 +1,6 @@
 # Deep-Learning-Projects
 Contains deep learning projects in NLP
+<<<<<<< HEAD
 
 
 ### Sentiment Analysis
@@ -20,3 +21,5 @@ Types and Approaches
 
 
 
+=======
+>>>>>>> c5250777db4d490ddcd3cfb54c135ca38cfd4a19

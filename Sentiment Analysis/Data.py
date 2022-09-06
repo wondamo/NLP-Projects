@@ -9,5 +9,9 @@ class Data:
     def get_column(self, column):
         return self.data[column]
     def add_feature(self, feature_name, func):
+<<<<<<< HEAD
         self.data[feature_name]=self.get_column('reviewText').apply(func)
         return self.data
+=======
+        self.data[feature_name]=self.get_column('reviewText').apply(func)
+>>>>>>> c5250777db4d490ddcd3cfb54c135ca38cfd4a19
