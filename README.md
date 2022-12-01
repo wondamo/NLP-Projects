@@ -3,15 +3,11 @@ Contains deep learning projects in NLP
 
 
 ### Sentiment Analysis
-Sentiment analysis aka opinion mining is the process of understanding the opinion of an author about a subject.
-Types and Approaches
-* Levels of granularity
-    * Document Level: Opinion of the whole review of a product
-    * Sentence Level: Opinion of each sentence of a review
-    * Aspect Level: Opinion of the features of a product
-* Approaches:
-    * Rule/lexicon based
-    * Machine Learning: This is the focus of this project
+Sentiment analysis aka opinion mining is the process of understanding the opinion of a subject about an object.
+* The Sentiment Analysis project was implemented using Naive Bayes Classifier, RNN -> LSTM & GRU, and Pre-trained BERT model
+* The Pre-trained BERT model was fine-tuned and deployed on AWS Sagemaker.
+
+**_Open the Sentiment Analysis folder to access project_**
 
 
 
