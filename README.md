@@ -10,9 +10,12 @@ Sentiment analysis aka opinion mining is the process of understanding the opinio
 **_Open the Sentiment Analysis folder to access project_**
 
 
+### Punctuation Restoration
 
-### Chatbot
+### Text Summarization
 
 ### Neural Machine Translation(NMT)
 Neural Machine Translation is training your computer to translate human languages e.g. From English to French, 
 or English to yoruba
+
+### Speech to text Summarization
