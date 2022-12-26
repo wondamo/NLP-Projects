@@ -1,1 +1,3 @@
 nltk
+evaluate
+seqeval

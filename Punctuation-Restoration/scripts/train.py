@@ -2,9 +2,10 @@ import os
 import argparse
 import numpy as np
 import pandas as pd
+import evaluate
 import tensorflow as tf
-from transformers.keras_callbacks import KerasMetricCallback
 from nltk import wordpunct_tokenize
+from transformers.keras_callbacks import KerasMetricCallback
 from transformers import AutoTokenizer, TFAutoModelForTokenClassification, DataCollatorForTokenClassification, create_optimizer
 from datasets import ClassLabel, Sequence, Dataset
 
@@ -22,11 +23,13 @@ if __name__ == "__main__":
     parser.add_argument("--model-dir", type=str, default=os.environ["SM_MODEL_DIR"])
     
     args, _ = parser.parse_known_args()
+    
+    seqeval = evaluate.load("seqeval")
 
     lab2id = {',':1,'.':2,'!':3,'NaN':0}
     id2lab = {v:k for k,v in lab2id.items()}
 
-    df = pd.read_csv('review-Copy1.csv')
+    df = pd.read_csv('s3://sagemaker-us-east-1-179099335435/dataset/review-Copy1.csv')
     df = df.dropna(axis=0, subset=['reviewText'])
     df = df[["reviewText"]]
     dataset = Dataset.from_pandas(df)
@@ -48,10 +51,12 @@ if __name__ == "__main__":
     dataset = dataset.map(process)
     dataset.features['tag']=Sequence(feature=ClassLabel(num_classes=4, names=['Nan', ',', '.', '!']))
     dataset = dataset.train_test_split(test_size=0.2)
+    
+    label_list=dataset['train'].features['tag'].feature.names
 
-    model_checkpoint = "bert-base-cased"
+    model_checkpoint = args.model_name_or_path
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-    model = TFAutoModelForTokenClassification.from_pretrained(model_checkpoint, id2label=id2lab, label2id=lab2id)
+    model = TFAutoModelForTokenClassification.from_pretrained(model_checkpoint, num_labels=4, id2label=id2lab, label2id=lab2id)
     data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer, return_tensors="tf")
     
     def tokenize_and_align_labels(examples):
@@ -75,7 +80,7 @@ if __name__ == "__main__":
         tokenized_inputs["labels"] = labels
         return tokenized_inputs
 
-    tok_df = dataset.map(tokenize_and_align_labels, batched=True)
+    tok_df = dataset.map(tokenize_and_align_labels, batched=True, remove_columns=dataset['train'].column_names)
     
     def compute_metrics(p):
         predictions, labels = p
@@ -91,6 +96,7 @@ if __name__ == "__main__":
         ]
 
         results = seqeval.compute(predictions=true_predictions, references=true_labels)
+        print(results)
         return {
             "precision": results["overall_precision"],
             "recall": results["overall_recall"],
@@ -98,17 +104,17 @@ if __name__ == "__main__":
             "accuracy": results["overall_accuracy"],
         }
 
-    tf_train_df = model.prepare_tf_dataset(
-        tok_df['train'],
+    tf_train_df = tok_df['train'].to_tf_dataset(
+        columns=["attention_mask", "input_ids", "labels", "token_type_ids"],
         shuffle=True,
         collate_fn=data_collator,
-        batch_size=16,
+        batch_size=8,
     )
-    tf_test_df = model.prepare_tf_dataset(
-        tok_df['test'],
+    tf_test_df = tok_df['test'].to_tf_dataset(
+        columns=["attention_mask", "input_ids", "labels", "token_type_ids"],
         shuffle=False,
         collate_fn=data_collator,
-        batch_size=16,
+        batch_size=8,
     )
 
     tf.keras.mixed_precision.set_global_policy("mixed_float16")
@@ -126,7 +132,7 @@ if __name__ == "__main__":
     
     metric_callback = KerasMetricCallback(metric_fn=compute_metrics, eval_dataset=tf_test_df)
 
-    model.fit(tf_train_df, epochs=num_epochs)
+    model.fit(tf_train_df, validation_data=tf_test_df, epochs=num_epochs, callbacks=[metric_callback])
 
     model.save_pretrained(args.model_dir)
     tokenizer.save_pretrained(args.model_dir)
