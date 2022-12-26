@@ -1,11 +1,10 @@
-import pandas as pd
-import argparse
 import os
+import argparse
+import numpy as np
+import pandas as pd
 import tensorflow as tf
+from transformers.keras_callbacks import KerasMetricCallback
 from nltk import wordpunct_tokenize
-from tensorflow.keras.losses import SparseCategoricalCrossentropy
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.optimizers.schedules import PolynomialDecay
 from transformers import AutoTokenizer, TFAutoModelForTokenClassification, DataCollatorForTokenClassification, create_optimizer
 from datasets import ClassLabel, Sequence, Dataset
 
@@ -54,57 +53,62 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
     model = TFAutoModelForTokenClassification.from_pretrained(model_checkpoint, id2label=id2lab, label2id=lab2id)
     data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer, return_tensors="tf")
-
-    def align_labels_with_tokens(labels, word_ids):
-        new_labels = []
-        current_word = None
-        for word_id in word_ids:
-            if word_id != current_word:
-                # Start of a new word!
-                current_word = word_id
-                label = -100 if word_id is None else labels[word_id]
-                new_labels.append(label)
-            elif word_id is None:
-                # Special token
-                new_labels.append(-100)
-            else:
-                # Same word as previous token
-                label = labels[word_id]
-                # If the label is B-XXX we change it to I-XXX
-                if label % 2 == 1:
-                    label += 1
-                new_labels.append(label)
-
-        return new_labels
-
+    
     def tokenize_and_align_labels(examples):
         tokenized_inputs = tokenizer(examples["tokens"], truncation=True, is_split_into_words=True)
-        all_labels = examples["tag"]
-        new_labels = []
-        for i, labels in enumerate(all_labels):
-            word_ids = tokenized_inputs.word_ids(i)
-            new_labels.append(align_labels_with_tokens(labels, word_ids))
+    
+        labels = []
+        for i, label in enumerate(examples["tag"]):
+            word_ids = tokenized_inputs.word_ids(batch_index=i)
+            label_ids = []
+            previous_word = None
+            for word_id in word_ids:
+                if word_id is None:
+                    label_ids.append(-100)
+                elif word_id != previous_word:
+                    label_ids.append(label[word_id])
+                else:
+                    label_ids.append(-100)
+                previous_word = word_id
+            labels.append(label_ids)
 
-        tokenized_inputs["labels"] = new_labels
+        tokenized_inputs["labels"] = labels
         return tokenized_inputs
 
-    tok_df = dataset.map(
-        tokenize_and_align_labels,
-        batched=True,
-        remove_columns=dataset["train"].column_names,
-    )
+    tok_df = dataset.map(tokenize_and_align_labels, batched=True)
+    
+    def compute_metrics(p):
+        predictions, labels = p
+        predictions = np.argmax(predictions, axis=2)
 
-    tf_train_df = tok_df["train"].to_tf_dataset(
-        columns=['attention_mask', 'input_ids', 'labels', 'token_type_ids'],
+        true_predictions = [
+            [label_list[p] for (p, l) in zip(prediction, label) if l != -100]
+            for prediction, label in zip(predictions, labels)
+        ]
+        true_labels = [
+            [label_list[l] for (p, l) in zip(prediction, label) if l != -100]
+            for prediction, label in zip(predictions, labels)
+        ]
+
+        results = seqeval.compute(predictions=true_predictions, references=true_labels)
+        return {
+            "precision": results["overall_precision"],
+            "recall": results["overall_recall"],
+            "f1": results["overall_f1"],
+            "accuracy": results["overall_accuracy"],
+        }
+
+    tf_train_df = model.prepare_tf_dataset(
+        tok_df['train'],
         shuffle=True,
         collate_fn=data_collator,
-        batch_size=8,
+        batch_size=16,
     )
-    tf_test_df = tok_df["test"].to_tf_dataset(
-        columns=['attention_mask', 'input_ids', 'labels', 'token_type_ids'],
+    tf_test_df = model.prepare_tf_dataset(
+        tok_df['test'],
         shuffle=False,
         collate_fn=data_collator,
-        batch_size=8,
+        batch_size=16,
     )
 
     tf.keras.mixed_precision.set_global_policy("mixed_float16")
@@ -119,9 +123,10 @@ if __name__ == "__main__":
         weight_decay_rate=0.01,
     )
     model.compile(optimizer=optimizer)
+    
+    metric_callback = KerasMetricCallback(metric_fn=compute_metrics, eval_dataset=tf_test_df)
 
     model.fit(tf_train_df, epochs=num_epochs)
-    model.evaluate(tf_test_df, batch_size=args.test_batch_size, return_dict=True)
 
     model.save_pretrained(args.model_dir)
     tokenizer.save_pretrained(args.model_dir)
