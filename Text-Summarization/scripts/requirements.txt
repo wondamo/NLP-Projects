@@ -1,2 +1,2 @@
 evaluate
-rouge_score
+rouge-score
