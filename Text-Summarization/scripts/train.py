@@ -1,9 +1,11 @@
-import pandas as pd
-from datasets import load_dataset
-from transformers import AutoTokenizer, DataCollatorForSeq2Seq, TFAutoModelForSeq2SeqLM, create_optimizer
-import tensorflow as tf
-import argparse
 import os
+import argparse
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from datasets import load_dataset
+from transformers.keras_callbacks import KerasMetricCallback
+from transformers import AutoTokenizer, DataCollatorForSeq2Seq, TFAutoModelForSeq2SeqLM, create_optimizer, AdamWeightDecay
 
 if __name__ == "__main__":
 
@@ -31,41 +33,51 @@ if __name__ == "__main__":
     def process(example):
         model_data = tokenizer(example['chapter'], truncation=True)
         model_label = tokenizer(example['summary'], truncation=True)
-        model_data['labels'] = model_label['input_ids']
+        model_data['labels'] = model_label['input_ids'] 
         return model_data
     
     tok_df = dataset.map(process, batched=True)
     
-    tf_train_df = model.prepare_tf_dataset(
-        tok_df["train"],
+    def compute_metrics(eval_pred):
+        predictions, labels = eval_pred
+        decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+        labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+        result = rouge.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
+
+        prediction_lens = [np.count_nonzero(pred != tokenizer.pad_token_id) for pred in predictions]
+        result["gen_len"] = np.mean(prediction_lens)
+
+        return {k: round(v, 4) for k, v in result.items()}
+    
+    tf_train_df = tok_df['train'].to_tf_dataset(
+        columns=['input_ids', 'attention_mask', 'labels'],
         collate_fn=data_collator,
         shuffle=True,
         batch_size=8,
     )
-    tf_eval_df = model.prepare_tf_dataset(
-        tok_df["validation"],
+    tf_test_df = tok_df['test'].to_tf_dataset(
+        columns=['input_ids', 'attention_mask', 'labels'],
+        collate_fn=data_collator,
+        shuffle=True,
+        batch_size=8,
+    )
+    tf_eval_df = tok_df['validation'].to_tf_dataset(
+        columns=['input_ids', 'attention_mask', 'labels'],
         collate_fn=data_collator,
         shuffle=False,
         batch_size=8,
     )
-    
-    num_train_epochs = 3
-    num_train_steps = len(tf_train_dataset) * num_train_epochs
-    model_name = model_checkpoint.split("/")[-1]
 
-    optimizer, schedule = create_optimizer(
-        init_lr=5.6e-5,
-        num_warmup_steps=0,
-        num_train_steps=num_train_steps,
-        weight_decay_rate=0.01,
-    )
+    optimizer = AdamWeightDecay(learning_rate=2e-5, weight_decay_rate=0.01)
 
     model.compile(optimizer=optimizer)
 
-    # Train in mixed-precision float16
-    tf.keras.mixed_precision.set_global_policy("mixed_float16")
+    metric_callback = KerasMetricCallback(metric_fn=compute_metrics, eval_dataset=tf_eval_df)
     
-    train_results = model.fit(tf_train_dataset, validation_data=tf_eval_dataset, epochs=8)
+    train_results = model.fit(tf_train_df, validation_data=tf_eval_df, epochs=args.epochs, callbacks=[metric_callback])
+    eval_results = model.evaluate(tf_test_df, return_dict=True)
     
     print("Saving model")
     model.save_pretrained(args.model_dir)
