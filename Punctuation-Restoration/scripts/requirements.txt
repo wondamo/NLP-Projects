@@ -1,3 +1,4 @@
 nltk
 evaluate
 seqeval
+sagemaker

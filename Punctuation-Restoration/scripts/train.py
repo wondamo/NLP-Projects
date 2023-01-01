@@ -1,4 +1,6 @@
 import os
+os.system("pip install -U sagemaker")
+import boto3
 import argparse
 import numpy as np
 import pandas as pd
@@ -9,7 +11,7 @@ from sagemaker.session import Session
 from sagemaker.experiments import load_run
 from transformers.keras_callbacks import KerasMetricCallback
 from transformers import AutoTokenizer, TFAutoModelForTokenClassification, DataCollatorForTokenClassification, create_optimizer
-from datasets import ClassLabel, Sequence, Dataset
+from datasets import ClassLabel, Sequence, Dataset, load_dataset
 
 if __name__ == "__main__":
     
@@ -20,12 +22,11 @@ if __name__ == "__main__":
     parser.add_argument("--train_batch_size", type=int, default=8)
     parser.add_argument("--test_batch_size", type=int, default=8)
     parser.add_argument("--model_name_or_path", type=str)
-
-    # Data, model, and output directories
     parser.add_argument("--model-dir", type=str, default=os.environ["SM_MODEL_DIR"])
     
     args, _ = parser.parse_known_args()
-#     sagemaker_session = Session()
+    boto_session = boto3.session.Session(region_name='us-east-1')
+    session = Session(boto_session=boto_session)
     
     seqeval = evaluate.load("seqeval")
 
@@ -55,6 +56,7 @@ if __name__ == "__main__":
     dataset = dataset.filter(lambda example: len(example['tokens']) != 0)
     dataset['train'].features['tag']=Sequence(feature=ClassLabel(num_classes=6, names=['Nan', ',', '.', '!', '?', "'"]))
     dataset['test'].features['tag']=Sequence(feature=ClassLabel(num_classes=6, names=['Nan', ',', '.', '!', '?', "'"]))
+    dataset['validation'].features['tag']=Sequence(feature=ClassLabel(num_classes=6, names=['Nan', ',', '.', '!', '?', "'"]))
     
     label_list=dataset['train'].features['tag'].feature.names
 
@@ -141,17 +143,16 @@ if __name__ == "__main__":
     
     metric_callback = KerasMetricCallback(metric_fn=compute_metrics, eval_dataset=tf_val_df)
     
-    with load_run() as run:
+    with load_run(sagemaker_session=session) as run:
         train_results = model.fit(tf_train_df, validation_data=tf_val_df, epochs=args.epochs, callbacks=[metric_callback])
-        eval_results = model.evaluate(tf_test_df, return_dict=True)
+        test_results = model.evaluate(tf_test_df, return_dict=True)
         
         print(f'Train \n {train_results}')
-        print(f'Test \n {eval_results}')
+        print(f'Test \n {test_results}')
         
-        run.log_metric(name="Train Loss", value=train_results[0])
-        run.log_metric(name="Train Accuracy", value=train_results[1])
-        run.log_metric(name="Test Loss", value=test_results[0])
-        run.log_metric(name="Test Accuracy", value=test_results[1])
-
         model.save_pretrained(args.model_dir)
         tokenizer.save_pretrained(args.model_dir)
+        
+        run.log_metric(name="Train Loss", value=train_results.history['loss'])
+        run.log_metric(name="Train Accuracy", value=train_results.history[1])
+        run.log_metric(name="Test Loss", value=test_results['loss'])
